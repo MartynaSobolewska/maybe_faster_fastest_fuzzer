@@ -1,0 +1,6 @@
+{
+  "<start>" : [["<expression>"]],
+  "<expression>": [["<value>"],["<expression>", " + ", "<value>"],["(", "<value>", "+", "<value>", ")"], ["<expression>", " - ", "<value>"], ["<expression>", " * ", "<value>"], ["<expression>", " / ", "<value>"]],
+  "<value>": [["<number>"], ["<number>", "<number>"], ["<number>", "<number>", "<number>"], ["<number>", "<number>", "<number>","<number>"]],
+  "<number>": [["0"],["1"], ["2"], ["3"], ["4"], ["5"], ["6"], ["7"], ["8"], ["9"]]
+}

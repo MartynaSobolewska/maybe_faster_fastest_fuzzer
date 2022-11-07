@@ -1,5 +1,8 @@
+use std::cell::Cell;
 use std::collections::{BTreeMap, HashMap};
+use std::time::Instant;
 use serde::{Deserialize, Serialize};
+use rand::Rng;
 
 // Json representation of the data struct
 // Map Fragment name : List<List <Fragment Names>>
@@ -24,8 +27,17 @@ enum Fragment {
 struct GrammarRust {
     // all types
     fragments: Vec<Fragment>,
+
+    // Cached fragment identifier for the start node
+    start: Option<FragmentId>,
+
     // Mapping of non-terminal names to fragment identifiers
     name_to_fragment: BTreeMap<String, FragmentId>,
+
+    // Xorshift seed
+    // in cell so that we do not need mutable access
+    // https://doc.rust-lang.org/std/cell/
+    seed: Cell<usize>
 }
 
 // turns json representation into rust data structure
@@ -49,10 +61,8 @@ impl GrammarRust {
 
         // having all non-term names, allocate their term/non-term extensions
         for (non_term, fragments) in grammar.0.iter() {
-            print!("Handling {:?}\n", non_term);
             // get the non-terminal fragment identifier
             let fragment_id = ret.name_to_fragment[non_term];
-            print!("Its id: {:?}\n", fragment_id);
 
             // Expressions
             let mut expressions = Vec::new();
@@ -63,7 +73,6 @@ impl GrammarRust {
                 let mut options = Vec::new();
 
                 for option in js_sub_fragment {
-                    print!("Option: {:?}\n", option);
                     // if option is one of the previously found non-terminals
                     let fragment_id = if let Some(&non_terminal) =
                     ret.name_to_fragment.get(option) {
@@ -92,8 +101,26 @@ impl GrammarRust {
             *fragment = Fragment::NonTerminal(expressions);
         }
 
+        // Resolve the start node
+        ret.start = Some(ret.name_to_fragment["<start>"]);
+
         // print!("{:#?}\n", ret);
         ret
+    }
+    // Initialize the RNG
+    pub fn seed(&self, val: usize){
+        self.seed.set(val);
+    }
+
+    // get a random value
+    pub fn rand(&self) -> usize{
+        let mut seed = self.seed.get();
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 43;
+
+        self.seed.set(seed);
+        seed
     }
 
     pub fn allocate_fragment(&mut self, fragment: Fragment) -> FragmentId {
@@ -110,14 +137,82 @@ impl GrammarRust {
     pub fn lookup_fragment_mut(&mut self, id: FragmentId) -> &mut Fragment {
         &mut self.fragments[id.0]
     }
+
+    #[inline]
+    pub fn lookup_fragment(&self, id: FragmentId) -> &Fragment {
+        &self.fragments[id.0]
+    }
+
+    #[inline]
+    pub fn lookup_fragment_nonterm(&self, id: FragmentId) -> &[FragmentId] {
+        // Match control flow action (?)
+        if let Fragment::NonTerminal(x) = &self.fragments[id.0]{
+            x
+        }else{
+            panic!("Was not a non-terminal!");
+        }
+    }
+
+    pub fn generate(&self, stack: &mut Vec<FragmentId>, buf: &mut Vec<u8>) {
+        // get access to the start node
+        let start = self.start.unwrap();
+
+        // start off working on start
+        stack.clear();
+        stack.push(start);
+
+        while !stack.is_empty() {
+            // unwrap makes sure the option is not a None
+            let cur = stack.pop().unwrap();
+
+            match self.lookup_fragment(cur) {
+                Fragment ::NonTerminal(options) => {
+                    let sel = options[self.rand() % options.len()];
+                    stack.push(sel);
+                    // print!("Non-terminal: {:?}\n", sel);
+                }
+                Fragment::Expression(expr) => {
+                    // we must process all of these in sequence
+                    // take expr slice and append all elements to stack vec
+                    expr.iter().rev().for_each(|x| stack.push(*x));
+                }
+                Fragment::Terminal(value) => {
+                    buf.extend_from_slice(value);
+                    // print!("TERM\n");
+                    if buf.len() > 1024*1024 {
+                        break;
+                    }
+                }
+            }
+            // let _ = stack.pop();
+        }
+
+    }
 }
 
 fn main() -> std::io::Result<()> {
     // serialize grammar input
-    let grammar: Grammar = serde_json::from_slice(&std::fs::read("grammar.json")?)?;
-
+    let grammar: Grammar = serde_json::from_slice(&std::fs::read("test.json")?)?;
     let gram = GrammarRust::new(&grammar);
-    print!("{:#?}\n", gram);
+    let mut rng = rand::thread_rng();
+    gram.seed(rng.gen::<i32>() as usize);
+    // print!("{:#?}\n", gram);
 
+    let mut buf = Vec::new();
+    let mut stack = Vec::new();
+    let mut generated = 0usize;
+    let mut it = Instant::now();
+
+    for iters in 1u64.. {
+        buf.clear();
+        gram.generate(&mut stack, &mut buf);
+        generated += buf.len();
+
+        if (iters & 0xffff) == 0{
+            let elapsed = (Instant::now() - it).as_secs_f64();
+            let bytes_per_sec = generated as f64 / elapsed;
+            print!("Bytes per sec: {:12.0} | Example: {:#?}\n", bytes_per_sec, String::from_utf8_lossy(&buf));
+        }
+    }
     Ok(())
 }
